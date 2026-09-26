@@ -524,6 +524,12 @@ code {
 .rp-div-hint { font-size: 11px; }
 .rp-console .expr-node { background: #fff; border-radius: 6px; }
 
+/* ---------- 伏笔回收路线校验 ---------- */
+.fs-card { max-height: 46%; display: flex; flex-direction: column; }
+.fs-card .fs-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.fs-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; }
+.fs-result .path-edge .badge-req { margin-left: 4px; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);

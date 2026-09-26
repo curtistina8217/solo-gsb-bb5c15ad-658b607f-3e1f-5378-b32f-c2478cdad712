@@ -27,6 +27,10 @@ const state = {
   covStale: false,        // 生成路线之后剧情又被编辑过
   covReplay: null,        // 逐步回放状态 { routeIndex, uids, result, loading, cursor }
   covReplayTimer: null,   // 草稿变化后回放结果的防抖重算定时器
+  foreshadow: { setups: [], payoffs: [] }, // 伏笔回收校验条件（编辑中；铺垫 / 回收场景 ID）
+  fsResult: null,         // 最近一次伏笔回收路线校验结果
+  fsStale: false,         // 校验之后剧情或校验条件又被修改过
+  _fsSig: null,           // 校验面板场景签名（避免每次编辑都重建下拉框）
   dirty: false,
   saving: false,
 };
@@ -92,6 +96,10 @@ async function openStory(id) {
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
+  state.foreshadow = { setups: [], payoffs: [] };
+  state.fsResult = null;
+  state.fsStale = false;
+  state._fsSig = null;
   $('storySelect').value = id;
   renderAll();
   await runAnalysis(false);
@@ -161,6 +169,10 @@ async function deleteStory() {
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
+  state.foreshadow = { setups: [], payoffs: [] };
+  state.fsResult = null;
+  state.fsStale = false;
+  state._fsSig = null;
   const next = await loadList();
   if (next) await openStory(next);
   else { renderAll(); toast('已删除'); }
@@ -208,6 +220,7 @@ function renderAll() {
   renderProbabilityPanel();
   renderForcedPanel();
   renderCoveragePanel();
+  renderForeshadowPanel();
   renderDetail(null);
 }
 
@@ -527,6 +540,7 @@ function markDirty(rerender) {
   markProbabilityStale();
   markForcedStale();
   markCoverageStale();
+  markForeshadowStale();
   renderSaveStatus();
   if (rerender) rerender();
   else renderAnalysis();
@@ -534,6 +548,7 @@ function markDirty(rerender) {
   renderProbabilityPanel(); // 仅刷新过期提示与已展示的结果，不重新推演
   renderForcedPanel(); // 仅刷新过期提示与已展示的结果，不重新分析
   renderCoveragePanel(); // 仅刷新过期提示与已展示的路线，不重新生成
+  renderForeshadowPanel(); // 内部有签名缓存，场景未变时仅刷新过期提示与结果
   clearTimeout(reanalyzeTimer);
   reanalyzeTimer = setTimeout(() => runAnalysis(true), 500);
 }
@@ -2147,6 +2162,232 @@ function renderCoverageResult() {
   }
 }
 
+/* ============================================================
+ * 伏笔回收路线校验
+ * ============================================================ */
+function fsSignature() {
+  if (!state.story) return '';
+  // 场景集合（ID / 标题）变化时才重建下拉行
+  return JSON.stringify(state.story.scenes.map((s) => [s.id, s.title || '']));
+}
+
+function markForeshadowStale() {
+  if (!state.fsResult) return;
+  state.fsStale = true;
+  const el = $('fsStale');
+  if (el) el.hidden = false;
+}
+
+function renderForeshadowPanel() {
+  const card = $('fsCard');
+  if (!state.story) { card.hidden = true; return; }
+  card.hidden = false;
+
+  // 仅当场景集合变化时才重建下拉行，避免打断正在进行的交互
+  const sig = fsSignature();
+  if (sig !== state._fsSig) {
+    state._fsSig = sig;
+    // 场景被删除 / 改名时，自动从校验条件中剔除（保留未选择的空行）
+    const valid = new Set(state.story.scenes.map((s) => s.id));
+    const prune = (arr) => arr.filter((id) => !id || valid.has(id));
+    state.foreshadow.setups = prune(state.foreshadow.setups);
+    state.foreshadow.payoffs = prune(state.foreshadow.payoffs);
+    renderFsRows('setups');
+    renderFsRows('payoffs');
+  }
+
+  $('fsStale').hidden = !state.fsStale;
+  renderForeshadowResult();
+}
+
+/** 渲染铺垫 / 回收场景行；两组互斥（同一场景不能既铺垫又回收） */
+function renderFsRows(listKey) {
+  const containerId = listKey === 'setups' ? 'fsSetups' : 'fsPayoffs';
+  const box = $(containerId);
+  box.innerHTML = '';
+  const list = state.foreshadow[listKey];
+  const otherKey = listKey === 'setups' ? 'payoffs' : 'setups';
+
+  list.forEach((sceneId, i) => {
+    const row = document.createElement('div');
+    row.className = 'pq-opt-row';
+
+    const sel = document.createElement('select');
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '（选择场景）';
+    sel.appendChild(ph);
+    const usedSame = new Set(list.filter((x, j) => x && j !== i));
+    const usedOther = new Set(state.foreshadow[otherKey].filter(Boolean));
+    for (const sc of state.story.scenes) {
+      const opt = document.createElement('option');
+      opt.value = sc.id;
+      opt.textContent = `${sc.id}${sc.title ? ' — ' + sc.title : ''}`;
+      if (sc.id !== sceneId && (usedSame.has(sc.id) || usedOther.has(sc.id))) {
+        opt.disabled = true;
+        opt.textContent += usedOther.has(sc.id)
+          ? `（已用作${otherKey === 'setups' ? '铺垫' : '回收'}）` : '（已选用）';
+      }
+      sel.appendChild(opt);
+    }
+    sel.value = sceneId || '';
+    sel.addEventListener('change', () => {
+      list[i] = sel.value;
+      renderFsRows('setups');
+      renderFsRows('payoffs');
+      markForeshadowStale();
+    });
+    row.appendChild(sel);
+
+    const del = document.createElement('button');
+    del.className = 'pq-opt-del';
+    del.textContent = '✕';
+    del.title = listKey === 'setups' ? '移除铺垫场景' : '移除回收场景';
+    del.addEventListener('click', () => {
+      list.splice(i, 1);
+      renderFsRows('setups');
+      renderFsRows('payoffs');
+      markForeshadowStale();
+    });
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+async function runForeshadow() {
+  if (!state.story) return;
+  const setups = state.foreshadow.setups.filter(Boolean);
+  const payoffs = state.foreshadow.payoffs.filter(Boolean);
+  if (!setups.length) return toast('请先选择至少一个铺垫场景');
+  if (!payoffs.length) return toast('请先选择至少一个回收场景');
+  if (new Set(setups).size !== setups.length || new Set(payoffs).size !== payoffs.length) {
+    return toast('铺垫 / 回收场景存在重复，请删除重复项');
+  }
+  const both = setups.filter((id) => payoffs.includes(id));
+  if (both.length) return toast(`场景不能既是铺垫又是回收：${both.join('、')}`);
+
+  try {
+    // 对编辑中的未保存草稿直接校验（不落盘）
+    state.fsResult = await api('POST', '/api/foreshadow', {
+      story: state.story,
+      query: { setups, payoffs },
+    });
+    state.fsStale = false;
+    renderForeshadowPanel();
+  } catch (e) {
+    toast(`伏笔回收校验失败：${e.message}`);
+  }
+}
+
+const FS_STATUS_META = {
+  pass: { cls: 'pq-ok', icon: '✓' },
+  violation: { cls: 'pq-err', icon: '✗' },
+  truncated: { cls: 'pq-warn', icon: '⚠' },
+  'setup-unreachable': { cls: 'pq-warn', icon: '⚠' },
+  'no-ending': { cls: 'pq-warn', icon: '⚠' },
+  'start-blocked': { cls: 'pq-err', icon: '✗' },
+};
+
+/** 违规路线视图：场景节点标注铺垫 / 回收事件与待回收状态，选项边带选择后状态 */
+function buildForeshadowPathView(path, knownVars) {
+  const wrap = document.createElement('div');
+  wrap.className = 'path-view';
+  (path || []).forEach((node, i, arr) => {
+    if (node.kind === 'scene') {
+      const div = document.createElement('div');
+      div.className = 'path-node scene';
+      let badge = i === 0 ? '<span class="badge badge-ok">起点</span>' : '';
+      if (node.foreshadow === 'setup') badge += '<span class="badge badge-warn">铺垫 · 置为待回收</span>';
+      else if (node.foreshadow === 'payoff') badge += '<span class="badge badge-ok">回收 · 已清除</span>';
+      if (i === arr.length - 1) badge += '<span class="badge badge-err">设计结局 · 伏笔未回收</span>';
+      const pendingBadge = node.pending
+        ? '<span class="badge badge-req" title="进入该场景后伏笔处于待回收状态">待回收</span>' : '';
+      div.innerHTML = `<span class="pn-title"></span><span class="pn-id"></span>${badge}${pendingBadge}`;
+      div.querySelector('.pn-title').textContent = node.title || node.sceneId;
+      div.querySelector('.pn-id').textContent = node.sceneId;
+      div.insertAdjacentHTML('beforeend', stateChips(node.state, knownVars || []));
+      wrap.appendChild(div);
+    } else {
+      const div = document.createElement('div');
+      div.className = 'path-edge';
+      div.appendChild(document.createTextNode(
+        `选项 ${node.optionIndex + 1}「${node.optionText || ''}」 → ${node.target}`));
+      if (node.optionUid) {
+        const uid = document.createElement('code');
+        uid.className = 'cov-uid';
+        uid.textContent = node.optionUid;
+        div.appendChild(uid);
+      }
+      if (node.pendingAfter) {
+        div.insertAdjacentHTML('beforeend', '<span class="badge badge-req">待回收</span>');
+      }
+      if (node.stateAfter) {
+        div.insertAdjacentHTML('beforeend', stateChips(node.stateAfter, knownVars || []));
+      }
+      wrap.appendChild(div);
+    }
+  });
+  return wrap;
+}
+
+function renderForeshadowResult() {
+  const box = $('fsResult');
+  box.innerHTML = '';
+  const r = state.fsResult;
+  if (!r || !state.story) return;
+
+  const meta = FS_STATUS_META[r.status] || { cls: 'pq-warn', icon: '⚠' };
+  const banner = document.createElement('div');
+  banner.className = `pq-banner ${meta.cls}`;
+  banner.textContent = `${meta.icon} ${r.message}`;
+  box.appendChild(banner);
+
+  if (r.conditionErrors && r.conditionErrors.length) {
+    const note = document.createElement('div');
+    note.className = 'pq-note';
+    note.textContent = `剧情中存在 ${r.conditionErrors.length} 处条件语法错误，本次校验按恒真处理（详见一致性分析）。`;
+    box.appendChild(note);
+  }
+
+  if (r.startBlocked) return;
+
+  // 统计
+  const verdict = { pass: '通过', violation: '发现违规' }[r.status] || '无法判定';
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  stats.innerHTML = `
+    <div class="stat ${r.status === 'pass' ? 'stat-ok' : (r.status === 'violation' ? 'stat-bad' : 'stat-warn')}"><span>校验结论</span><b>${verdict}</b></div>
+    <div class="stat"><span>可达设计结局</span><b>${r.endingCount}</b></div>
+    <div class="stat"><span>待回收状态</span><b>${r.pendingStates}</b></div>
+    <div class="stat"><span>枚举具体状态</span><b>${r.counts.states}</b></div>
+    <div class="stat"><span>布尔变量</span><b>${r.counts.variables}</b></div>
+  `;
+  box.appendChild(stats);
+
+  // 违规：最短违规路线（按选项步数）与沿途变量状态
+  if (r.violation) {
+    const label = document.createElement('div');
+    label.className = 'cov-section-label';
+    label.textContent = `最短违规路线（${r.violation.depth} 步，到达设计结局「${r.violation.endingTitle || r.violation.endingScene}」时伏笔仍待回收）`;
+    box.appendChild(label);
+    box.appendChild(buildForeshadowPathView(r.violation.path, r.knownVars));
+    return;
+  }
+
+  // 无违规时的补充说明（铺垫不可达 / 无结局 / 截断 / 通过的明细）
+  if (r.status === 'pass' && r.endings && r.endings.length) {
+    const label = document.createElement('div');
+    label.className = 'cov-section-label';
+    label.textContent = `已校验的可达设计结局（${r.endings.length} 个）`;
+    box.appendChild(label);
+    for (const e of r.endings) {
+      const row = document.createElement('div');
+      row.className = 'pq-note';
+      row.textContent = `${e.title || e.sceneId}（${e.sceneId}）— ${e.states} 个终止状态，到达路线均经过回收场景`;
+      box.appendChild(row);
+    }
+  }
+}
 
 function fmtTime(iso) {
   if (!iso) return '';
@@ -2549,6 +2790,17 @@ function bindGlobalEvents() {
   $('btnRunProb').addEventListener('click', runProbability);
   $('btnRunForced').addEventListener('click', runForcedChoices);
   $('btnRunCoverage').addEventListener('click', runCoverage);
+  $('btnRunForeshadow').addEventListener('click', runForeshadow);
+  $('btnFsAddSetup').addEventListener('click', () => {
+    state.foreshadow.setups.push('');
+    renderFsRows('setups');
+    markForeshadowStale();
+  });
+  $('btnFsAddPayoff').addEventListener('click', () => {
+    state.foreshadow.payoffs.push('');
+    renderFsRows('payoffs');
+    markForeshadowStale();
+  });
   $('btnCloseDetail').addEventListener('click', () => $('detailPanel').hidden = true);
   $('btnSaveBaseline').addEventListener('click', saveBaseline);
   $('btnRunCompare').addEventListener('click', runCompare);

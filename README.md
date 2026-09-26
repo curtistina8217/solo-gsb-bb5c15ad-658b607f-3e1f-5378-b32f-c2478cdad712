@@ -1,6 +1,6 @@
 # 分支剧情一致性审校台（Branching Story Auditor）
 
-一个用于检查 **分支剧情 / 互动叙事脚本一致性** 的 Web 应用。支持为每个场景设置 **布尔前置条件、进入时状态赋值**，为每个选项设置 **显示条件、状态赋值、跳转目标和正整数权重**，并指定剧情起点。后端会从起点出发，按 **「场景 + 变量状态」组合状态** 进行穷举传播与去重，因此即使剧情包含环路（可反复返回的场景），分析也保证终止。基于同一状态图，还可以对编辑中的草稿做 **结局概率推演**：精确求解各终止场景的最终到达概率，并单独列出永远困在循环中的概率质量；生成 **选项覆盖路线**：用确定性贪心集合覆盖压缩出一组可执行路线，让所有实际可走的选项至少被走一遍；以及分析 **结局必经抉择**：精确求出每个可达终止场景的全部到达路线共同经过的稳定选项（含环、同场景多状态仍精确终止），并给出必经次序、最短见证路径与绕开反例查询。
+一个用于检查 **分支剧情 / 互动叙事脚本一致性** 的 Web 应用。支持为每个场景设置 **布尔前置条件、进入时状态赋值**，为每个选项设置 **显示条件、状态赋值、跳转目标和正整数权重**，并指定剧情起点。后端会从起点出发，按 **「场景 + 变量状态」组合状态** 进行穷举传播与去重，因此即使剧情包含环路（可反复返回的场景），分析也保证终止。基于同一状态图，还可以对编辑中的草稿做 **结局概率推演**：精确求解各终止场景的最终到达概率，并单独列出永远困在循环中的概率质量；生成 **选项覆盖路线**：用确定性贪心集合覆盖压缩出一组可执行路线，让所有实际可走的选项至少被走一遍；分析 **结局必经抉择**：精确求出每个可达终止场景的全部到达路线共同经过的稳定选项（含环、同场景多状态仍精确终止），并给出必经次序、最短见证路径与绕开反例查询；以及做 **伏笔回收路线校验**：选择铺垫场景与回收场景后，把「待回收」标记并入状态遍历，找出到达设计结局时伏笔仍未回收的最短违规路线。
 
 ## 能发现什么问题
 
@@ -227,6 +227,21 @@ npm start
 
 `POST /api/coverage/replay` 请求体为 `{ story, route: { options: [UID, ...], path? } }`（草稿不保存），已保存剧情可用 `POST /api/stories/:id/coverage/replay`（请求体即 `route`）。响应要点：`completed`（是否无分歧走完全程）、`total`、`trace.start` / `trace.steps`（每步含场景、UID、条件原文与求值结果、目标、选择前后状态）、`trace.end`、`divergence`（首个分歧点的 `reason` / `atStep` / `uid` / `sceneId` / `target` / `expected` / `actual` / `stateDiffs` / `explain`，无分歧时为 `null`）。分歧属于正常业务结果（HTTP 200），仅参数错误（缺少选项序列、起点无效等）返回 400。
 
+## 伏笔回收路线校验
+
+编辑页右侧的「伏笔回收路线校验」面板回答：**“伏笔埋下之后，是否每条通往设计结局的路线都把它回收了？会不会有玩家一路走到结局，伏笔还悬着？”**
+
+1. 在面板中各选一组 **铺垫场景**（进入后伏笔置为待回收）与 **回收场景**（进入后清除待回收）；两组互斥，同一场景不能既是铺垫又是回收；
+2. 点击「运行校验」，后端对 **编辑中的未保存草稿**（不落盘）展开「场景 + 完整变量状态」图，并把 1 位 **待回收标记并入遍历去重键**——状态键 = `(待回收, 场景 ID, 变量位图)`：每次进入铺垫场景置位（起点即铺垫也算），进入回收场景清除，其余场景沿继承。同一 `(场景, 变量状态)` 在两种标记下视为不同节点，“先埋伏笔绕一圈再回收”与“从未埋伏笔”的路线不会被错误合并；状态总数至多翻倍，含任意环路仍必然终止（沿用约 100 万状态安全上限）；
+3. **违规判定**：到达 **可达的设计结局**（场景本身没有任何选项的终止具体状态；有选项但全不可走的死局软锁不算）时仍待回收。BFS 按选项步数逐层展开，首个发现的违规即 **最短违规路线**，发现即停（违规路线真实存在，结论确凿）；结果展示该路线的 **选项步数、沿途每个场景到达时的完整变量状态**，并标注铺垫 / 回收事件与每步的待回收状态；
+4. **通过判定（缺一即单独提示，不判通过）**：完整探索（未截断）＋ 铺垫可达（遍历中至少进入过一次铺垫场景，否则伏笔从未埋下、校验无意义）＋ 存在可达设计结局（纯循环或只有死局时回收无从校验）＋ 无任何“设计结局且待回收”状态；
+5. **单独提示的三种无法判定**：铺垫不可达（`setup-unreachable`）、没有任何可达设计结局（`no-ending`）、状态上限截断（`truncated`，已探索范围无违规也不能断言通过）；起点前置不成立（`start-blocked`）同样单独提示；
+6. 校验针对编辑中的草稿；**草稿或铺垫 / 回收选择被修改后，旧结果标记为「可能过期」**，重新「运行校验」即可。
+
+**API 校验（返回 400）**：铺垫 / 回收列表均不得为空、不得含空行或重复项；每个场景 ID 必须存在；两组不得重叠；剧情缺少有效起点。
+
+响应要点：`ok`（是否通过）、`status`（`pass` / `violation` / `setup-unreachable` / `no-ending` / `truncated` / `start-blocked`）、`truncated`、`setupReached`、`pendingStates`（待回收具体状态数）、`endingCount` / `endingStates` / `endings`（可达设计结局明细）、`violation`（违规时含 `endingScene` / `depth` 选项步数 / `path` 场景与选项交替、场景节点带 `state` 与 `pending`、`foreshadow: setup|payoff` 标注 / `finalState`；无违规为 `null`）、`counts`、`knownVars`、`conditionErrors`、`statesExplored`、`maxStates`、`message`。
+
 ## HTTP API
 
 | 方法 | 路径 | 说明 |
@@ -250,6 +265,8 @@ npm start
 | `GET` | `/api/stories/:id/coverage` | 对已保存剧情生成选项覆盖路线 |
 | `POST` | `/api/coverage/replay` | 覆盖路线逐步回放：对请求体中的草稿剧情重放（不保存、不修改草稿），请求体 `{ story, route: { options, path? } }` |
 | `POST` | `/api/stories/:id/coverage/replay` | 对已保存剧情做覆盖路线逐步回放，请求体即 `route` |
+| `POST` | `/api/foreshadow` | 伏笔回收路线校验：对请求体中的草稿剧情直接校验（不落盘），请求体 `{ story, query: { setups, payoffs } }`（可注入测试用 `maxStates`） |
+| `POST` | `/api/stories/:id/foreshadow` | 对已保存剧情做伏笔回收路线校验，请求体即 `query` 或 `{ query }` |
 | `POST` | `/api/stories/:id/baseline` | 把请求体中的剧情分析结果保存为基线（同时落盘剧情），返回 `{ story, baseline, analysis }` |
 | `POST` | `/api/stories/:id/baseline/compare` | 基线对比；请求体可省略（对比已保存剧情）或传入编辑中的草稿，返回 `{ summary, items }` |
 | `DELETE` | `/api/stories/:id/baseline` | 删除基线（剧情内容不变） |
@@ -270,11 +287,20 @@ npm start
 
 其中 `requiredOptions` 为 **有序必经选项 UID 数组**（路径必须按数组次序依次经过这些选项，可通过 `path` 中选项边的 `requiredOrder` 确认命中次序），`disabledOptions` 为 **禁用选项 UID 数组**；两者均可省略或为空。校验规则：必经与禁用不得冲突、所有 UID 必须存在、同列表 UID 不得重复，否则返回 400。响应中 `found=true` 时含 `depth` / `path` / `finalState`（且 `unfinishedRequiredOptions` 为空），否则含 `closest`（差异最少状态、缺失变量 `missing`、未完成必经项 `unfinishedRequiredOptions`、最近路径）、顶层 `unfinishedRequiredOptions` 与 `canAssertUnsolvable`（为 `false` 表示因状态上限截断、不能断言无解）。
 
+伏笔回收校验的 `query` 形如（`setups` 为铺垫场景 ID 数组，`payoffs` 为回收场景 ID 数组，均必填、互斥）：
+
+```json
+{
+  "setups": ["forest"],
+  "payoffs": ["witchTower"]
+}
+```
+
 ## 目录结构
 
 ```
 .
-├── server.js              # Express 入口与 REST API（含基线、目标路径查询、结局概率推演、结局必经抉择、选项覆盖路线与逐步回放接口）
+├── server.js              # Express 入口与 REST API（含基线、目标路径查询、结局概率推演、结局必经抉择、选项覆盖路线与逐步回放、伏笔回收路线校验接口）
 ├── src/
 │   ├── expression.js      # 布尔表达式递归下降解析器 / 求值 / 失败解释
 │   ├── analyzer.js        # 「场景+状态」BFS 传播去重分析引擎（附带问题指纹）
@@ -283,6 +309,7 @@ npm start
 │   ├── forcedchoice.js    # 结局必经抉择：标签数据流不动点求共同必经选项 / 绕开反例 BFS
 │   ├── coverage.js        # 选项覆盖路线：可走选项见证路径 + 确定性贪心集合覆盖压缩
 │   ├── replay.js          # 覆盖路线逐步回放：按稳定 UID 用当前草稿逐步重校验，停在首个分歧点
+│   ├── foreshadow.js      # 伏笔回收路线校验：待回收标记并入状态遍历，求最短违规路线
 │   ├── weight.js          # 选项正整数权重的统一校验（保存 / 导入 / 推演共用）
 │   ├── fingerprint.js     # 不依赖数组顺序的问题稳定指纹
 │   ├── baseline.js        # 基线快照构建与新增/已修复/仍存在/详情变化对比
@@ -302,6 +329,7 @@ npm start
 │   ├── forcedchoice.js    # 结局必经抉择（不动点必经 / 次序 / 见证 / 绕开反例）与 API 自检（node test/forcedchoice.js）
 │   ├── coverage.js        # 选项覆盖路线与 API 自检（node test/coverage.js）
 │   ├── replay.js          # 覆盖路线逐步回放与 API 自检（node test/replay.js）
+│   ├── foreshadow.js      # 伏笔回收路线校验（违规 / 通过 / 铺垫不可达 / 无结局 / 截断）与 API 自检（node test/foreshadow.js）
 │   └── healthcheck.js     # 健康检查探针回归测试（node test/healthcheck.js）
 ├── Dockerfile
 └── docker-compose.yml
@@ -310,7 +338,7 @@ npm start
 自检：
 
 ```bash
-npm test          # 依次运行 smoke.js、baseline.js、pathquery.js、probability.js、forcedchoice.js、coverage.js、replay.js 与 healthcheck.js
+npm test          # 依次运行 smoke.js、baseline.js、pathquery.js、probability.js、forcedchoice.js、coverage.js、replay.js、foreshadow.js 与 healthcheck.js
 ```
 
 ## 技术栈

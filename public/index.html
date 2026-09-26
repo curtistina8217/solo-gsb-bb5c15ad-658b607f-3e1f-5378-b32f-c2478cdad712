@@ -184,6 +184,26 @@
         <div id="covResult" class="cov-result"></div>
       </section>
 
+      <section id="fsCard" class="card fs-card" hidden>
+        <div class="card-head">
+          <h2>伏笔回收路线校验</h2>
+          <button id="btnRunForeshadow" class="btn btn-small btn-primary">运行校验</button>
+        </div>
+        <div class="fs-hint">选择一组<b>铺垫场景</b>与一组<b>回收场景</b>：沿「场景 + 完整变量状态」图把「待回收」标记并入遍历——每次进入铺垫场景即置为待回收，进入回收场景即清除；若到达可达设计结局时仍待回收，按选项步数展示最短违规路线与沿途变量状态。通过仅在完整探索、铺垫可达且存在可达设计结局时判定。</div>
+        <div class="field">
+          <span>铺垫场景（进入后伏笔置为待回收）</span>
+          <div id="fsSetups" class="pq-opt-list"></div>
+          <button id="btnFsAddSetup" class="btn btn-small">＋ 添加铺垫场景</button>
+        </div>
+        <div class="field">
+          <span>回收场景（进入后清除待回收标记）</span>
+          <div id="fsPayoffs" class="pq-opt-list"></div>
+          <button id="btnFsAddPayoff" class="btn btn-small">＋ 添加回收场景</button>
+        </div>
+        <div id="fsStale" class="diff-stale" hidden>⚠ 剧情或校验条件已修改，以下结果可能过期，请重新「运行校验」</div>
+        <div id="fsResult" class="fs-result"></div>
+      </section>
+
       <section id="detailPanel" class="card detail-card" hidden>
         <div class="card-head">
           <h2 id="detailTitle">问题详情</h2>
