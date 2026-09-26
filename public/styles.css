@@ -470,6 +470,18 @@ code {
 .cov-excluded .cov-ex-loc { color: var(--text); }
 .cov-excluded .cov-uid { background: #eef1f6; color: var(--muted); }
 
+/* ---------- 伏笔回收路线校验 ---------- */
+.fs-card { max-height: 46%; display: flex; flex-direction: column; }
+.fs-card .fs-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.fs-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; }
+.fs-ending-row {
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  background: #fff;
+}
+.fs-ending-row .fs-end-title { font-weight: 600; }
+.fs-ending-row .fs-end-id { font-size: 11px; color: var(--muted); }
+
 /* ---------- 覆盖路线：逐步回放 ---------- */
 .cov-replay-toggle { margin-left: auto; }
 .cov-replay-toggle.cov-replay-on { background: var(--warning-bg); border-color: #eccb8e; color: var(--warning); }

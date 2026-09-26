@@ -10,6 +10,7 @@ const { planCoverage } = require('./src/coverage');
 const { replayRoute } = require('./src/replay');
 const { analyzeForcedChoices, bypassForced } = require('./src/forcedchoice');
 const { buildBaseline, compareWithBaseline } = require('./src/baseline');
+const { checkForeshadow } = require('./src/foreshadow');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -174,6 +175,29 @@ app.post('/api/stories/:id/coverage/replay', wrap((req, res) => {
   const body = req.body || {};
   const route = body.route !== undefined ? body.route : body;
   res.json(replayRoute(story, route));
+}));
+
+// ---- 伏笔回收路线校验：对请求体中的草稿剧情直接校验（不落盘），供编辑页面板实时使用 ----
+// 请求体：{ story: <剧情>, query: { setupScene, payoffScene } }（铺垫与回收场景必须不同）。
+// 在「场景 + 完整变量状态」图上把待回收标记并入遍历：进入铺垫场景置位、进入回收场景
+// 清除；到达可达设计结局时仍待回收 => 返回按选项步数最短的违规路线与沿途变量状态。
+// 仅在完整探索、铺垫可达且存在可达设计结局时判通过（verdict=pass）；铺垫不可达 /
+// 无设计结局 / 状态上限截断分别以 verdict=setupUnreachable / noEnding / truncated
+// 单独提示。场景缺失、铺垫与回收相同、起点无效等返回 400。
+app.post('/api/foreshadow', wrap((req, res) => {
+  const body = req.body || {};
+  const story = body.story !== undefined ? body.story : body;
+  const opts = Number.isInteger(body.maxStates) && body.maxStates > 0 ? { maxStates: body.maxStates } : {};
+  res.json(checkForeshadow(story, body.query || {}, opts));
+}));
+
+// ---- 对已保存的剧情做伏笔回收路线校验（请求体即 query 或 { query }） ----
+app.post('/api/stories/:id/foreshadow', wrap((req, res) => {
+  const story = storage.getStory(req.params.id);
+  if (!story) return res.status(404).json({ error: '剧情不存在' });
+  const body = req.body || {};
+  const query = body.query !== undefined ? body.query : body;
+  res.json(checkForeshadow(story, query));
 }));
 
 // ---- 分析基线：把当前（通常是编辑中的）分析结果保存为基线，随剧情 JSON 持久化 ----
